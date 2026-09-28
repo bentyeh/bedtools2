@@ -415,24 +415,26 @@ void BedIntersectPE::IntersectBamPE(string bamFile) {
 
     // rip through the BAM file and convert each mapped entry to BEDPE
     BamAlignment bam1, bam2;
-    while (reader.GetNextAlignment(bam1)) {
-        reader.GetNextAlignment(bam2);        
-        if (bam1.Name != bam2.Name) {
-            while (bam1.Name != bam2.Name)
+    bool haveBam1 = reader.GetNextAlignment(bam1);
+    while (haveBam1) {
+        // if there is no next record, bam1 is the last one and has no mate.
+        bool haveBam2 = reader.GetNextAlignment(bam2);
+        if (!haveBam2 || bam1.Name != bam2.Name) {
+            if (bam1.IsPaired())
             {
-                if (bam1.IsPaired()) 
-                {
-                    cerr << "*****WARNING: Query " << bam1.Name
-                         << " is marked as paired, but it's mate does not occur"
-                         << " next to it in your BAM file.  Skipping. " << endl;
-                }
-                bam1 = bam2;
-                reader.GetNextAlignment(bam2);
+                cerr << "*****WARNING: Query " << bam1.Name
+                     << " is marked as paired, but it's mate does not occur"
+                     << " next to it in your BAM file.  Skipping. " << endl;
             }
+            // skip bam1 only; bam2 may be the first mate of the next pair.
+            bam1 = bam2;
+            haveBam1 = haveBam2;
+            continue;
         }
-        else if (bam1.IsPaired() && bam1.IsPaired()) {
+        if (bam1.IsPaired() && bam2.IsPaired()) {
             ProcessBamBlock(bam1, bam2, refs, writer);
         }
+        haveBam1 = reader.GetNextAlignment(bam1);
     }
     // close up
     reader.Close();
