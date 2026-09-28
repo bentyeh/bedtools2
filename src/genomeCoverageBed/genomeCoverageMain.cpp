@@ -284,14 +284,27 @@ void genomecoverage_help(void) {
     cerr << "\t\t\tWith BED files, requires at least 6 columns (strand is column 6). " << endl;
     cerr << "\t\t\t- (STRING): can be + or -" << endl << endl;
 
-    cerr << "\t-pc\t\t" << "Calculate coverage of pair-end fragments." << endl;
-    cerr << "\t\t\tWorks for BAM files only" << endl;
+    cerr << "\t-pc\t\t" << "Calculate coverage of paired-end fragments (not reads)." << endl;
+    cerr << "\t\t\tEach fragment is counted once, from the leftmost base of the" << endl;
+    cerr << "\t\t\tforward mate to the rightmost base of the reverse mate." << endl;
+    cerr << "\t\t\tOnly first-mate (0x40), properly-paired (0x2), FR-oriented" << endl;
+    cerr << "\t\t\talignments with a mapped mate are used. Secondary," << endl;
+    cerr << "\t\t\tsupplementary, duplicate and QC-fail alignments are NOT" << endl;
+    cerr << "\t\t\tfiltered; e.g., pre-filter with \"samtools view -F 0xF0C\"." << endl;
+    cerr << "\t\t\tOverrides -fs, -split, -ignoreD, -5 and -3." << endl;
+    cerr << "\t\t\tWorks for BAM files only" << endl << endl;
 
-    cerr << "\t-fs\t\t" << "Force to use provided fragment size instead of read length" << endl;
+    cerr << "\t-fs\t\t" << "Extend each alignment to the provided fragment size, in its" << endl;
+    cerr << "\t\t\t5' to 3' direction, instead of using the aligned read length." << endl;
+    cerr << "\t\t\tAll mapped alignments are extended, including both mates" << endl;
+    cerr << "\t\t\tof a pair (use -pc for paired-end data). Ignored with -pc." << endl;
     cerr << "\t\t\tWorks for BAM files only" << endl;
+    cerr << "\t\t\t- (INTEGER)" << endl << endl;
 
-    cerr << "\t-du\t\t" << "Change strand af the mate read (so both reads from the same strand) useful for strand specific" << endl;
-    cerr << "\t\t\tWorks for BAM files only" << endl;
+    cerr << "\t-du\t\t" << "Change strand of the second mate (so both mates report the" << endl;
+    cerr << "\t\t\tstrand of the first mate). Only affects -strand; useful for" << endl;
+    cerr << "\t\t\tstrand-specific (e.g., dUTP) libraries." << endl;
+    cerr << "\t\t\tWorks for BAM files only" << endl << endl;
 
     cerr << "\t-5\t\t" << "Calculate coverage of 5\" positions (instead of entire interval)." << endl << endl;
 
@@ -335,6 +348,11 @@ void genomecoverage_help(void) {
 
     cerr << "\t(3) The input BAM (-ibam) file must be sorted by position." << endl;
     cerr << "\t A \"samtools sort <BAM>\" should suffice."<< endl << endl;
+
+    cerr << "\t(4) Chromosomes are reported in the order first seen in the input" << endl;
+    cerr << "\t (for BAM, the header order), followed by chromosomes with no" << endl;
+    cerr << "\t coverage. Output is thus not sorted by chromosome name. Before" << endl;
+    cerr << "\t using bedGraphToBigWig, sort with \"LC_ALL=C sort -k1,1 -k2,2n\"."<< endl << endl;
 
     cerr << "Tip 1. Use samtools faidx to create a genome file from a FASTA: " << endl;
     cerr << "\tOne can the samtools faidx command to index a FASTA file." << endl;

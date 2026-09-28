@@ -23,7 +23,11 @@ for a given genome.
   argument.
 
   2. If the input is in BAM (-ibam) format, the BAM file must be sorted 
-  by position.  Using ``samtools sort aln.bam aln.sorted`` will suffice.
+  by position.  Using ``samtools sort -o aln.sorted.bam aln.bam`` will suffice.
+
+  3. The output is *not* necessarily sorted lexicographically by chromosome
+  name. See `Output order`_ below if you intend to convert the output to
+  BigWig or otherwise need sorted output.
 
 
 ===============================
@@ -65,10 +69,12 @@ Usage and option summary
 **-trackline**                   | Adds a UCSC/Genome-Browser track line definition in the first line of the output.
                                  | See `here <http://genome.ucsc.edu/goldenPath/help/bedgraph.html>`_ for more details about track line definition:
 **-trackopts**                   Writes additional track line definition parameters in the first line.
-**-pc**                          | Calculates coverage of intervals from left point of a pair reads to the right point.
-                                 | Works for BAM files only
-**-fs**                          | Forces to use fragment size instead of read length
-                                 | Works for BAM files only
+**-pc**                          | Calculate coverage of paired-end *fragments* rather than of the individual reads. Each properly-paired, FR-oriented pair contributes one interval spanning from the leftmost aligned base of the forward-strand mate to the rightmost aligned base of the reverse-strand mate (i.e., the unsequenced insert between the mates is also counted). See `Coverage by fragment`_ for the exact rules.
+                                 | Works for BAM files only. Takes precedence over ``-fs``, ``-split``, ``-ignoreD``, ``-5`` and ``-3``.
+**-fs**                          | Extend each alignment to a fixed fragment size (INTEGER), in its 5' to 3' direction, instead of using the aligned length of the read. See `Coverage by fragment`_.
+                                 | Works for BAM files only. Ignored when ``-pc`` is used.
+**-du**                          | Flip the strand of the second mate of each pair, so that both mates report the strand of the first mate. Only affects the ``-strand`` filter; useful for strand-specific (e.g., dUTP) libraries.
+                                 | Works for BAM files only.
 
 ===========================      ===============================================================================================================================================================================================================
 
@@ -359,7 +365,140 @@ for single-read experiment and extend the reads in the 5’-3’ direction up to
 The coverage "by estimated fragments" or by actual pair-end fragments graph is expected to peak at the actual binding site.
 
 
-``-fs`` Forces to use provided fragment size.
+Two options are available for computing the coverage of fragments instead of
+reads: ``-pc`` for paired-end data, where both ends of each fragment are known,
+and ``-fs`` for (typically single-end) data, where the fragment length must be
+estimated. Both work only with BAM input (``-ibam``); they are silently ignored
+for BED/GFF/VCF input (``-i``). If both are given, ``-pc`` takes precedence and
+``-fs`` is ignored.
+
+.. note::
+
+  In the descriptions below, coordinates are 0-based, half-open (as in BED and
+  BEDGRAPH output); *start* is the leftmost aligned reference position of an
+  alignment and *end* is one past its rightmost aligned reference position
+  (determined from the CIGAR string, including ``D`` and ``N`` operations).
 
 
-``-pc`` Calculates coverage for paired-end reads, coverage is calculated as the number of fragments covering each base pair
+``-pc`` Coverage of paired-end fragments
+------------------------------------------------------------------------------
+With ``-pc``, the reported depth at each base is the number of paired-end
+fragments that overlap the base. Each fragment is counted **once**, based
+solely on the alignment record of the first mate (read 1) of the pair. An
+alignment record contributes a fragment only if **all** of the following hold:
+
+1. it is mapped, flagged as paired (``0x1``), properly paired (``0x2``),
+   has a mapped mate (``0x8`` not set), and is the first mate in the pair
+   (``0x40``);
+2. the pair is in forward-reverse ("FR") orientation, i.e., the mate that
+   starts further left is on the forward strand. Pairs in which the mate that
+   starts further left is on the reverse strand (e.g., "RF" or "dovetailed"
+   pairs) are skipped. Pairs where both mates start at the same position are
+   kept.
+
+The fragment interval is then:
+
+* if read 1 is on the forward strand (the left mate): ``[start, start + |TLEN|)``,
+  using the template length (``TLEN``, column 9) of the read 1 record;
+* if read 1 is on the reverse strand (the right mate): ``[mate start, end)``,
+  using the mate position (``PNEXT``, column 8) and read 1's own alignment end.
+
+Thus the whole fragment, including the unsequenced insert between the mates
+and any deletions or introns, is counted: ``-split`` and ``-ignoreD`` have no
+effect, and ``-5``/``-3`` are ignored. Records that are not the first mate
+(including all read 2 records) and unpaired (single-end) reads never contribute
+coverage. When combined with ``-strand``, fragments are selected by the strand
+of read 1 (``-du`` therefore has no effect with ``-pc``).
+
+.. warning::
+
+  ``-pc`` does **not** filter on secondary (``0x100``), supplementary
+  (``0x800``), duplicate (``0x400``) or QC-fail (``0x200``) flags, nor on
+  mapping quality. A secondary or supplementary read 1 record that still
+  carries the properly-paired flag and passes the orientation check is counted
+  as an additional fragment. To count each primary, non-duplicate fragment
+  exactly once, filter the BAM first, for example:
+
+  .. code-block:: bash
+
+    $ samtools view -u -f 0x2 -F 0xF0C aln.sorted.bam \
+        | bedtools genomecov -ibam stdin -bg -pc
+
+  Because only the read 1 record is inspected, a mapping-quality filter
+  (e.g., ``samtools view -q 30``) applied before ``genomecov`` keeps or
+  discards a fragment based on read 1's mapping quality alone.
+
+For example, the following two pairs (for pair ``A``, read 1 is the left mate;
+for pair ``B``, read 1 is the right mate) each produce one fragment:
+
+.. code-block:: bash
+
+  $ samtools view pairs.bam | cut -f 1-9
+  A   99   chr1  101  60  50M  =  251  200
+  B   163  chr1  151  60  50M  =  301  200
+  A   147  chr1  251  60  50M  =  101  -200
+  B   83   chr1  301  60  50M  =  151  -200
+
+  $ bedtools genomecov -ibam pairs.bam -bg -pc
+  chr1  100  150  1
+  chr1  150  300  2
+  chr1  300  350  1
+
+Without ``-pc``, only the bases covered by the reads themselves would be
+reported, and each base would be counted once per overlapping read.
+
+
+``-fs`` Coverage of reads extended to a fixed fragment size
+------------------------------------------------------------------------------
+With ``-fs N``, every mapped alignment is extended to ``N`` bp in its 5' to 3'
+direction, starting from its 5' end:
+
+* forward-strand alignments cover ``[start, start + N)``;
+* reverse-strand alignments cover ``[end - N, end)``.
+
+Extended intervals are truncated at the chromosome boundaries. Alignments are
+extended regardless of their flags (other than being mapped), so for
+paired-end data *both* mates are extended and each fragment is effectively
+counted twice; use ``-pc`` for paired-end data instead. ``-fs`` can be combined
+with ``-strand`` (and ``-du``), but ``-split``, ``-ignoreD``, ``-5`` and ``-3``
+have no effect.
+
+For example, a 75 bp forward-strand read aligned at ``[1, 76)`` and a 75 bp
+reverse-strand read aligned at ``[225, 300)``, each extended to 100 bp:
+
+.. code-block:: bash
+
+  $ bedtools genomecov -ibam chip.bam -bg -fs 100
+  chr1  1    101  1
+  chr1  200  300  1
+
+
+==============================================================================
+Output order
+==============================================================================
+``bedtools genomecov`` processes the input one chromosome at a time and
+reports chromosomes in the order in which they are first encountered in the
+input. For a coordinate-sorted BAM file, this is the order of the ``@SQ``
+lines in the BAM header (e.g., ``chr1, chr2, ..., chr10, ...``); for BED input,
+it is the order of the chromosomes in the file. Within a chromosome, the
+output is always sorted by position.
+
+Chromosomes that have no coverage at all are reported *after* all other
+chromosomes, in the order of the genome file (``-g``) or the BAM header. This
+applies to the histogram (default), ``-d`` and ``-bga`` output; with ``-bg``
+and ``-dz``, such chromosomes produce no output.
+
+Consequently, the output is generally **not** sorted lexicographically by
+chromosome name. Tools such as UCSC's ``bedGraphToBigWig`` require BEDGRAPH
+input sorted by chromosome name in byte (``C`` locale) order and then by start
+position, so the output should be sorted first:
+
+.. code-block:: bash
+
+  $ bedtools genomecov -ibam aln.sorted.bam -bg -pc \
+      | LC_ALL=C sort -k1,1 -k2,2n > aln.bedgraph
+  $ bedGraphToBigWig aln.bedgraph genome.chrom.sizes aln.bw
+
+Setting ``LC_ALL=C`` makes ``sort`` compare chromosome names byte by byte, as
+``bedGraphToBigWig`` does, rather than according to the rules of the current
+locale.
